@@ -1,0 +1,21 @@
+# --- API server ---
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# --- Data: prices, announcements, screener.in ---
+yfinance
+pandas
+httpx
+beautifulsoup4
+lxml
+
+# --- Reading PDFs (results filings, annual reports, transcripts) ---
+pymupdf
+
+# --- Picking relevant passages from long documents ---
+rank-bm25
+
+# --- LLM (Gemini: cheap model for bulk extraction, stronger model for reasoning) ---
+google-genai
