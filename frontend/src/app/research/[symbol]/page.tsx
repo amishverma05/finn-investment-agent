@@ -71,7 +71,7 @@ function Company() {
                 if (s.status !== "running" && poll.current) clearInterval(poll.current);
               })
               .catch(() => {});
-          }, 2000);
+          }, 1000); // every second, so the analysis streams in smoothly
         })
         .catch((e) => setJob({ status: "error", error: e instanceof Error ? e.message : "Failed" }));
     },
@@ -94,7 +94,12 @@ function Company() {
 
   const n = nums.data;
   const result = job?.status === "done" ? job.result : undefined;
-  const a = result?.analysis;
+  // While the AI is writing, show what it has written so far; each section fills in as it arrives.
+  const live = !result && job?.status === "running" ? job.partial : undefined;
+  const a = result?.analysis ?? (live ? fillAnalysis(live) : undefined);
+  // A section is still loading until its first item arrives, or until the AI moves past it.
+  const waiting = (key: keyof Analysis, next: keyof Analysis) =>
+    !result && !(live && ((live[key] as unknown[] | undefined)?.length || live[next] !== undefined));
 
   return (
     <main>
@@ -151,22 +156,29 @@ function Company() {
         <div className="space-y-3 px-3 pt-4">
           {/* The one thing to know */}
           <div className="px-1">
-            {a ? (
+            {a?.one_liner ? (
               <p className="font-serif text-[23px] leading-[1.25]">
                 <Cite text={a.one_liner} />
+                {live && <span className="ml-0.5 inline-block h-[0.9em] w-[2px] animate-pulse bg-signal align-middle" />}
               </p>
             ) : (
               <AnalysisStatus job={job} onRetry={() => startAnalysis(true)} />
             )}
+            {live && (
+              <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Loader2 className="size-3 animate-spin text-signal" />
+                Writing the analysis… sections appear as they&apos;re ready
+              </p>
+            )}
           </div>
 
           <Snapshot n={n} a={a} />
-          <Promises a={a} pending={!a} />
-          <Story a={a} pending={!a} />
+          <Promises a={a} pending={waiting("promises", "narrative_vs_numbers")} />
+          <Story a={a} pending={waiting("narrative_vs_numbers", "current_guidance")} />
           <Trajectory n={n} />
           <Balance n={n} />
           <Cash n={n} />
-          <Case a={a} pending={!a} />
+          <Case a={a} pending={waiting("bull", "bear")} />
           <AskPrompt symbol={symbol} name={n.name} />
           <Sources n={n} r={result} onRefresh={() => startAnalysis(true)} />
         </div>
@@ -176,6 +188,21 @@ function Company() {
 }
 
 // ---------- Pieces ----------
+
+/** A complete-shaped Analysis from a partly written one (missing parts are empty). */
+function fillAnalysis(p: Partial<Analysis>): Analysis {
+  return {
+    one_liner: p.one_liner ?? "",
+    business: p.business ?? "",
+    segments: p.segments ?? [],
+    promises: p.promises ?? [],
+    narrative_vs_numbers: p.narrative_vs_numbers ?? [],
+    current_guidance: p.current_guidance ?? [],
+    bull: p.bull ?? [],
+    bear: p.bear ?? [],
+    watch: p.watch ?? [],
+  };
+}
 
 function Section({ id, title, children, note }: { id: string; title: string; children: React.ReactNode; note?: string }) {
   return (
@@ -268,7 +295,7 @@ function Snapshot({ n, a }: { n: Numbers; a?: Analysis }) {
   const last = n.metrics.quarters[n.metrics.quarters.length - 1];
   return (
     <Section id="snapshot" title="Snapshot" note={`${n.basis} · ₹ crore`}>
-      {a ? (
+      {a?.business ? (
         <p className="text-[14px] leading-relaxed text-foreground/90">
           <Cite text={a.business} />
         </p>
@@ -291,7 +318,7 @@ function Snapshot({ n, a }: { n: Numbers; a?: Analysis }) {
           ))}
         </div>
       )}
-      <div className={cn("grid grid-cols-3 gap-px overflow-hidden rounded-xl bg-border", a && "mt-4")}>
+      <div className={cn("grid grid-cols-3 gap-px overflow-hidden rounded-xl bg-border", a?.business && "mt-4")}>
         {ratios.map(([k, v]) => (
           <div key={k} className="bg-card px-2.5 py-2">
             <p className="text-[10px] text-faint">{k}</p>

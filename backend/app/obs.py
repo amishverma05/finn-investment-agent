@@ -76,10 +76,11 @@ def _explain(name: str, fields: dict) -> str | None:
             return f"Fetching {fields.get('arg')}'s recent company announcements from the NSE website."
         if "screener" in url:
             return f"Searching screener.in for companies matching '{fields.get('arg')}'."
-    if name == "llm call":
+    if name in ("llm call", "llm stream"):
         text = LLM_EXPLAINED.get(fields.get("purpose", ""))
         tier = "cheap" if fields.get("tier") == "cheap" else "strong"
-        return f"{text} ({tier} model)" if text else None
+        live = ", shown on the page as it's written" if name == "llm stream" else ""
+        return f"{text} ({tier} model{live})" if text else None
     text = STEP_EXPLAINED.get(name)
     if not text:
         return None

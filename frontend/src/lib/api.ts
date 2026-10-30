@@ -297,6 +297,8 @@ export type ResearchJob = {
   status: "idle" | "running" | "done" | "error" | "no_ai";
   steps?: Step[];
   result?: ResearchResult;
+  /** The analysis written so far, while the AI is still streaming it. */
+  partial?: Partial<Analysis>;
   error?: string;
 };
 

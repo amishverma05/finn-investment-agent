@@ -194,7 +194,7 @@ def _fmt_annual(ys: list[dict]) -> str:
     return "\n".join(f"{y['year']}: revenue {y['revenue']}, OPM {y['opm']}%, PAT {y['pat']}" for y in ys)
 
 
-def _synthesise(d: dict, m: dict, calls: list[dict], ar_chunks: list[dict]) -> Analysis | None:
+def _synthesise(d: dict, m: dict, calls: list[dict], ar_chunks: list[dict], on_partial=None) -> Analysis | None:
     calls_txt = "\n\n".join(
         f"[{c['period']} call] tone: {c['tone']}\n"
         + "\n".join(f"- ({s['topic']}, {s['horizon']}) {s['statement']}" for s in c["guidance"])
@@ -212,7 +212,8 @@ def _synthesise(d: dict, m: dict, calls: list[dict], ar_chunks: list[dict]) -> A
         flags="; ".join(f["text"] for f in m["flags"]) or "none",
         calls=calls_txt, ar=ar_txt,
     )
-    return llm.generate_json(prompt, Analysis, tier="strong", system=SYNTH_SYSTEM)
+    # Streamed: the page shows each section as soon as the model has written it.
+    return llm.stream_json(prompt, Analysis, tier="strong", system=SYNTH_SYSTEM, on_partial=on_partial)
 
 
 # ---------- Public API ----------
@@ -284,7 +285,8 @@ def _run(symbol: str, job: dict) -> None:
         step(2, "done", f"Picked {len(ar_chunks)} passages from annual report {ar['year']}" if ar else "No annual report found")
 
         step(3, "running")
-        analysis = _synthesise(d, m, calls, ar_chunks)
+        analysis = _synthesise(d, m, calls, ar_chunks, on_partial=lambda p: job.update(partial=p))
+        job.pop("partial", None)
         step(3, "done")
         if not analysis:
             raise ValueError("The model didn't return an analysis. Try again in a minute.")
