@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ChevronDown, Sparkles } from "lucide-react";
 import { readLS, useApi, useStored, writeLS, type Digest, type Holding } from "@/lib/api";
+import { useScrollMemory } from "@/lib/nav";
 import { pct, tokens, tone } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { FilingCard } from "@/components/filing-card";
@@ -46,6 +47,7 @@ export default function BriefPage() {
 
   const digest = useApi<Digest>(`/digest?hours=${hours}`);
   const book = useApi<{ items: Holding[] }>("/portfolio");
+  useScrollMemory(!!digest.data && !!book.data);
 
   const groups = useMemo(() => {
     const items = digest.data?.items ?? [];

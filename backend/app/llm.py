@@ -75,23 +75,44 @@ def _get_client():
         return _client
 
 
-def _candidates(tier: Tier) -> list[str]:
+def _models(tier: Tier) -> list[str]:
     raw = settings.model_cheap if tier == "cheap" else settings.model_strong
-    names = [m.strip() for m in raw.split(",") if m.strip()]
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _candidates(tier: Tier) -> list[str]:
+    """Models to try, in order: this tier's models (last one that worked first),
+    then the other tier's models as a last resort, so a busy or rate-limited
+    model never leaves us with no answer."""
+    own = _models(tier)
     known = _working_model.get(tier)
-    if known in names:
-        names.remove(known)
-        names.insert(0, known)
-    return names
+    if known in own:
+        own.remove(known)
+        own.insert(0, known)
+    other = _models("strong" if tier == "cheap" else "cheap")
+    return own + [m for m in other if m not in own]
+
+
+SERVER_RETRIES = 1        # on 503/500: retry the same model once...
+SERVER_RETRY_PAUSE = 2.0  # ...after this many seconds, then move to the next model
 
 
 def _call(tier: Tier, contents: Any, config: Any, purpose: str = ""):
+    """Try each candidate model. Failure handling:
+    - 503/500 (model busy): wait 2s, retry once, then switch to the next model.
+    - 429 (rate limited): switch to the next model straight away, no waiting.
+    - 400/403/404 (model missing or not allowed): switch to the next model.
+    - anything else (e.g. bad API key): give up."""
     from google.genai import errors
 
     chars = len(contents) if isinstance(contents, str) else None
+    own = _models(tier)
+    candidates = _candidates(tier)
     last_err: Exception | None = None
-    for model in _candidates(tier):
-        for attempt in range(4):
+    for i, model in enumerate(candidates):
+        nxt = candidates[i + 1] if i + 1 < len(candidates) else None
+        switch_note = f"switching to {nxt}" if nxt else "no models left"
+        for attempt in range(1 + SERVER_RETRIES):
             waited = time.perf_counter()
             try:
                 with _slots:
@@ -105,7 +126,10 @@ def _call(tier: Tier, contents: Any, config: Any, purpose: str = ""):
                             t["in_tok"] = meta.prompt_token_count
                             t["out_tok"] = meta.candidates_token_count
                             t["think_tok"] = meta.thoughts_token_count
-                _working_model[tier] = model
+                if model in own:  # don't make a cross-tier fallback the tier's default
+                    _working_model[tier] = model
+                elif i > 0:
+                    log.warning("llm %s answered by fallback model %s (other tier)", purpose, model)
                 u = _usage.get()
                 if u and meta:
                     u.add(
@@ -116,20 +140,23 @@ def _call(tier: Tier, contents: Any, config: Any, purpose: str = ""):
                 return resp
             except errors.ClientError as e:
                 last_err = e
-                if e.code == 429:  # rate limited: back off and retry
-                    pause = min(8 * (attempt + 1), 30)
-                    log.warning("llm %s rate-limited on %s, sleeping %ss before retry", purpose, model, pause)
-                    time.sleep(pause)
-                    continue
-                if e.code in (400, 403, 404):  # model missing or not allowed: try the next one
-                    log.warning("model %s failed (%s), trying next: %s", model, e.code, str(e)[:200])
+                if e.code == 429:
+                    log.warning("llm %s rate-limited on %s, %s\n    ↳ This model hit its usage limit, so we try another model instead of waiting.",
+                                purpose, model, switch_note)
+                    break
+                if e.code in (400, 403, 404):
+                    log.warning("llm %s: model %s unavailable (%s), %s: %s", purpose, model, e.code, switch_note, str(e)[:200])
                     break
                 raise
             except errors.ServerError as e:
                 last_err = e
-                log.warning("llm %s server error on %s (attempt %d): %s", purpose, model, attempt + 1, str(e)[:200])
-                time.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"All {tier} models failed: {last_err}")
+                if attempt < SERVER_RETRIES:
+                    log.warning("llm %s server error on %s (attempt %d), retrying in %.0fs: %s\n    ↳ Google says this model is busy; one quick retry before trying another model.",
+                                purpose, model, attempt + 1, SERVER_RETRY_PAUSE, str(e)[:200])
+                    time.sleep(SERVER_RETRY_PAUSE)
+                else:
+                    log.warning("llm %s server error on %s again, %s", purpose, model, switch_note)
+    raise RuntimeError(f"All models failed for {tier} tier: {last_err}")
 
 
 def generate_json(prompt: str, schema: type[BaseModel], tier: Tier = "cheap", system: str | None = None):

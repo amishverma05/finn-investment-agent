@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowUpRight, ChevronDown, Loader2 } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { api, type Filing, type ManagementInsight, type ResultsInsight } from "@/lib/api";
 import { ago, cr, pct, tone } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -20,11 +20,26 @@ export function headline(f: Filing) {
 
 const INSIGHT_LABEL = { results: "Headline numbers", management: "Who's involved" } as const;
 
+type Insight = ResultsInsight | ManagementInsight;
+
+// Which cards are open and what they loaded, kept for this tab. Coming back to the feed shows
+// the same cards open, so the page layout (and scroll position) is exactly as you left it.
+const cardMemory = new Map<string, { open: boolean; insight: Insight | null }>();
+
 export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; compact?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [insight, setInsight] = useState<ResultsInsight | ManagementInsight | null>(null);
+  const [open, setOpenState] = useState(() => cardMemory.get(f.id)?.open ?? false);
+  const [insight, setInsightState] = useState<Insight | null>(() => cardMemory.get(f.id)?.insight ?? null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const setOpen = (v: boolean) => {
+    cardMemory.set(f.id, { insight: cardMemory.get(f.id)?.insight ?? null, open: v });
+    setOpenState(v);
+  };
+  const setInsight = (v: Insight) => {
+    cardMemory.set(f.id, { open: cardMemory.get(f.id)?.open ?? true, insight: v });
+    setInsightState(v);
+  };
 
   async function toggle() {
     const next = !open;
@@ -33,7 +48,7 @@ export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; 
       setLoading(true);
       setErr(null);
       try {
-        setInsight(await api(`/filings/${f.id}/insight`));
+        setInsight(await api<Insight>(`/filings/${f.id}/insight`));
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Couldn't load");
       } finally {
@@ -42,18 +57,19 @@ export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; 
     }
   }
 
+  // The whole card links to the company's research page (an invisible link stretched over it).
+  // Buttons and links inside sit above it (relative z-10), so they keep their own action.
   return (
     <article
       className={cn(
-        "relative px-4 py-3.5",
-        !compact && "mx-3 mb-2.5 overflow-hidden rounded-2xl border border-border bg-card px-4 py-4",
+        "group relative px-4 py-3.5 transition-colors active:bg-foreground/[0.04]",
+        !compact && "mx-3 mb-2.5 overflow-hidden rounded-2xl border border-border bg-card px-4 py-4 hover:border-foreground/20",
       )}
     >
+      <Link href={`/research/${f.symbol}`} aria-label={`Research ${f.company}`} className="absolute inset-0" />
       {!compact && f.tier === "attention" && <span className="absolute inset-y-4 left-0 w-[3px] rounded-r bg-signal" />}
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <Link href={`/research/${f.symbol}`} className="num font-medium text-foreground hover:underline">
-          {f.symbol}
-        </Link>
+        <span className="num font-medium text-foreground">{f.symbol}</span>
         <span className="text-faint">·</span>
         <span>{f.category_label}</span>
         <span className="text-faint">·</span>
@@ -64,25 +80,23 @@ export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; 
 
       <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
         {f.insight && (
-          <button onClick={toggle} className="flex items-center gap-1 font-medium text-foreground">
+          <button onClick={toggle} className="relative z-10 flex items-center gap-1 font-medium text-foreground">
             {INSIGHT_LABEL[f.insight]}
             <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
           </button>
         )}
         {!f.insight && f.summary && f.text && (
-          <button onClick={() => setOpen(!open)} className="flex items-center gap-1">
+          <button onClick={() => setOpen(!open)} className="relative z-10 flex items-center gap-1">
             Filing text
             <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
           </button>
         )}
         {f.url && (
-          <a href={f.url} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 hover:text-foreground">
+          <a href={f.url} target="_blank" rel="noreferrer" className="relative z-10 flex items-center gap-0.5 hover:text-foreground">
             PDF <ArrowUpRight className="size-3" />
           </a>
         )}
-        <Link href={`/research/${f.symbol}`} className="ml-auto hover:text-foreground">
-          Dig in →
-        </Link>
+        <ChevronRight className="ml-auto size-4 text-faint transition-transform group-hover:translate-x-0.5" aria-hidden />
       </div>
 
       <AnimatePresence initial={false}>
@@ -206,7 +220,7 @@ function People({ m }: { m: ManagementInsight }) {
           {p.sources.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
               {p.sources.map((s) => (
-                <a key={s.url} href={s.url} target="_blank" rel="noreferrer" className="text-[10px] text-faint underline underline-offset-2">
+                <a key={s.url} href={s.url} target="_blank" rel="noreferrer" className="relative z-10 text-[10px] text-faint underline underline-offset-2">
                   {s.title}
                 </a>
               ))}

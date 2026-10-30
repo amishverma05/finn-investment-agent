@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Bell, Briefcase, Newspaper, Search } from "lucide-react";
+import { useNavCounter } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const TABS = [
@@ -14,6 +15,7 @@ const TABS = [
 
 export function BottomNav() {
   const path = usePathname();
+  useNavCounter(path);
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40">
       <div className="mx-auto max-w-[480px] border-t border-border bg-background/85 backdrop-blur-xl pb-safe">

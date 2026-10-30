@@ -1,16 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
+import { canGoBack } from "@/lib/nav";
+import { openChat } from "@/lib/chat";
+import { Cite } from "@/components/cite";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Check, Loader2, RefreshCw, Send, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, Loader2, MessageCircle, RefreshCw, X } from "lucide-react";
 import {
   api,
   readLS,
   useApi,
   writeLS,
   type Analysis,
-  type AskAnswer,
   type Flag,
   type Numbers,
   type ResearchJob,
@@ -29,7 +31,6 @@ const SECTIONS = [
   ["balance", "Balance sheet"],
   ["cash", "Cash"],
   ["case", "Bull / Bear"],
-  ["ask", "Ask"],
 ] as const;
 
 export default function CompanyPage() {
@@ -49,6 +50,7 @@ export default function CompanyPage() {
 
 function Company() {
   const { symbol: raw } = useParams<{ symbol: string }>();
+  const router = useRouter();
   const symbol = decodeURIComponent(raw).toUpperCase();
   const nums = useApi<Numbers>(`/research/${symbol}/numbers`);
   const [job, setJob] = useState<ResearchJob | null>(null);
@@ -98,7 +100,18 @@ function Company() {
     <main>
       <div className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-xl">
         <div className="flex items-center gap-3 px-4 pt-[max(env(safe-area-inset-top),0.75rem)] pb-2">
-          <Link href="/research" className="-ml-1 rounded-full p-1 text-muted-foreground" aria-label="Back">
+          <Link
+            href="/research"
+            onClick={(e) => {
+              // Return to wherever you came from (Brief, Alerts, Portfolio…), at the same scroll spot.
+              if (canGoBack()) {
+                e.preventDefault();
+                router.back();
+              }
+            }}
+            className="-ml-1 rounded-full p-1 text-muted-foreground"
+            aria-label="Back"
+          >
             <ArrowLeft className="size-5" />
           </Link>
           <div className="min-w-0 flex-1">
@@ -154,7 +167,7 @@ function Company() {
           <Balance n={n} />
           <Cash n={n} />
           <Case a={a} pending={!a} />
-          <Ask symbol={symbol} />
+          <AskPrompt symbol={symbol} name={n.name} />
           <Sources n={n} r={result} onRefresh={() => startAnalysis(true)} />
         </div>
       )}
@@ -163,24 +176,6 @@ function Company() {
 }
 
 // ---------- Pieces ----------
-
-/** Render [source] tags as quiet chips. */
-function Cite({ text }: { text: string }) {
-  const parts = text.split(/(\[[^\]]+\])/g);
-  return (
-    <>
-      {parts.map((p, i) =>
-        /^\[[^\]]+\]$/.test(p) ? (
-          <span key={i} className="mx-0.5 inline-block rounded bg-foreground/[0.06] px-1 align-middle font-sans text-[10px] leading-4 text-faint">
-            {p.slice(1, -1)}
-          </span>
-        ) : (
-          <span key={i}>{p}</span>
-        ),
-      )}
-    </>
-  );
-}
 
 function Section({ id, title, children, note }: { id: string; title: string; children: React.ReactNode; note?: string }) {
   return (
@@ -610,76 +605,28 @@ function CaseList({ title, tone: t, items }: { title: string; tone: string; item
 
 const STARTERS = ["What is the capex plan?", "Why did margins change?", "What are analysts worried about?"];
 
-function Ask({ symbol }: { symbol: string }) {
-  const [q, setQ] = useState("");
-  const [thread, setThread] = useState<{ q: string; a?: AskAnswer; err?: string }[]>([]);
-  const [busy, setBusy] = useState(false);
-
-  async function send(question: string) {
-    if (!question.trim() || busy) return;
-    setBusy(true);
-    setQ("");
-    setThread((t) => [...t, { q: question }]);
-    try {
-      const a = await api<AskAnswer>(`/research/${symbol}/ask`, { method: "POST", body: JSON.stringify({ question }) });
-      setThread((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, a } : x)));
-    } catch (e) {
-      setThread((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, err: e instanceof Error ? e.message : "Failed" } : x)));
-    } finally {
-      setBusy(false);
-    }
-  }
-
+/** Shortcut into the floating assistant, already set to this company. */
+function AskPrompt({ symbol, name }: { symbol: string; name: string }) {
   return (
     <Section id="ask" title="Ask the filings">
-      <div className="space-y-3">
-        {thread.map((t, i) => (
-          <div key={i}>
-            <p className="text-[13px] text-muted-foreground">{t.q}</p>
-            {t.a ? (
-              <div className="mt-1.5 rounded-xl bg-raised p-3 text-[14px] leading-relaxed">
-                <Cite text={t.a.answer} />
-                <p className="mt-2 text-[10px] text-faint">
-                  confidence: {t.a.confidence}
-                  {t.a.sources.length > 0 && ` · ${t.a.sources.map((s) => `${s.source} p.${s.page}`).join(", ")}`}
-                </p>
-              </div>
-            ) : t.err ? (
-              <p className="mt-1 text-xs text-down">{t.err}</p>
-            ) : (
-              <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Searching transcripts and annual report…
-              </div>
-            )}
-          </div>
+      <div className="flex flex-wrap gap-1.5">
+        {STARTERS.map((s) => (
+          <button
+            key={s}
+            onClick={() => openChat({ symbol, name, question: s })}
+            className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {s}
+          </button>
         ))}
       </div>
-      {thread.length === 0 && (
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {STARTERS.map((s) => (
-            <button key={s} onClick={() => send(s)} className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          send(q);
-        }}
-        className="mt-3 flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2"
+      <button
+        onClick={() => openChat({ symbol, name })}
+        className="mt-3 flex w-full items-center gap-2 rounded-xl border border-border bg-background px-3 py-2.5 text-left text-[14px] text-faint"
       >
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Ask about this company…"
-          className="w-full bg-transparent text-[14px] outline-none placeholder:text-faint"
-        />
-        <button type="submit" disabled={busy || !q.trim()} className="text-muted-foreground disabled:opacity-30" aria-label="Ask">
-          <Send className="size-4" />
-        </button>
-      </form>
+        <MessageCircle className="size-4" />
+        Ask anything about {name || symbol}…
+      </button>
     </Section>
   );
 }

@@ -357,37 +357,74 @@ class Answer(BaseModel):
     confidence: str = Field(description="high, medium or low")
 
 
-ASK_SYSTEM = SYNTH_SYSTEM + "\nIf the material doesn't answer the question, say so plainly."
+ASK_SYSTEM = SYNTH_SYSTEM + (
+    "\nYou are answering in a chat. If the material doesn't answer the question, say so plainly."
+    "\nUse the conversation so far only to understand follow-ups (e.g. 'what about margins?'); "
+    "facts must still come from the excerpts and financials."
+)
+
+# Search index per company, kept in memory: building it means chunking ~500 pages,
+# so follow-up questions reuse it. Keyed by the document links, so new documents rebuild it.
+_indexes: dict[str, tuple[tuple, documents.Index]] = {}
+_indexes_lock = threading.Lock()
 
 
-def ask(symbol: str, question: str) -> dict:
+def _company_index(symbol: str, d: dict) -> documents.Index:
+    calls = [c for c in d["documents"]["concalls"] if c.get("transcript")][:4]
+    ar = d["documents"]["annual_reports"][0] if d["documents"]["annual_reports"] else None
+    fingerprint = tuple(c["transcript"] for c in calls) + ((ar["url"],) if ar else ())
+    with _indexes_lock:
+        hit = _indexes.get(symbol)
+    if hit and hit[0] == fingerprint:
+        log.info("ask %s: reusing search index (%d chunks)", symbol, len(hit[1].chunks))
+        return hit[1]
+    with timed(log, "ask: gather documents", symbol=symbol) as t:
+        chunks = []
+        for c in calls:
+            chunks += documents.chunk(documents.pages(c["transcript"]), source=f"{c['period']} call")
+        if ar:
+            chunks += documents.chunk(documents.pages(ar["url"]), source=f"AR {ar['year']}")
+        t["chunks"] = len(chunks)
+    idx = documents.Index(chunks)
+    with _indexes_lock:
+        if len(_indexes) >= 8:  # keep memory bounded
+            _indexes.pop(next(iter(_indexes)))
+        _indexes[symbol] = (fingerprint, idx)
+    return idx
+
+
+def ask(symbol: str, question: str, history: list[dict] | None = None) -> dict:
+    """Answer a question from the company's filings. `history` is the recent chat
+    ([{role: user|assistant, text}]) so follow-up questions make sense."""
     symbol = symbol.upper()
     if not llm.available():
         return {"answer": "Add a Gemini API key to ask questions.", "confidence": "low", "sources": []}
-    key = f"ask:{symbol}:{question.strip().lower()}"
-    hit = db.cache_get(key)
-    if hit:
-        return hit
+    history = [h for h in (history or []) if h.get("text")][-6:]
+    # Standalone questions are cached; follow-ups depend on the conversation, so they aren't.
+    key = f"ask:{symbol}:{question.strip().lower()}" if not history else None
+    if key:
+        hit = db.cache_get(key)
+        if hit:
+            return hit
 
     d = screener.company(symbol)
     if not d:
         return {"answer": f"No data found for {symbol}.", "confidence": "low", "sources": []}
     usage = llm.track_usage()
     m = metrics.compute(d)
-    with timed(log, "ask: gather documents", symbol=symbol) as t:
-        chunks = []
-        for c in [c for c in d["documents"]["concalls"] if c.get("transcript")][:4]:
-            chunks += documents.chunk(documents.pages(c["transcript"]), source=f"{c['period']} call")
-        ar = d["documents"]["annual_reports"][0] if d["documents"]["annual_reports"] else None
-        if ar:
-            chunks += documents.chunk(documents.pages(ar["url"]), source=f"AR {ar['year']}")
-        t["chunks"] = len(chunks)
-    hits = documents.Index(chunks).search(question, k=8)
+    # For follow-ups, search with the previous question too ("and margins?" alone finds little).
+    prev_q = next((h["text"] for h in reversed(history) if h.get("role") == "user"), "")
+    hits = _company_index(symbol, d).search(f"{question} {prev_q}".strip(), k=8)
     context = "\n\n".join(f"[{c['source']} p.{c['page']}]\n{c['text'][:1500]}" for c in hits)
+    convo = "\n".join(
+        f"{'User' if h.get('role') == 'user' else 'You'}: {h['text'][:600]}" for h in history
+    )
     prompt = (
         f"Company: {d['name']}. Figures in ₹ crore.\n"
         f"Quarterly financials:\n{_fmt_quarters(m['quarters'])}\nAnnual:\n{_fmt_annual(m['trajectory']['years'])}\n\n"
-        f"Excerpts:\n{context}\n\nQuestion: {question}"
+        f"Excerpts:\n{context}\n\n"
+        + (f"Conversation so far:\n{convo}\n\n" if convo else "")
+        + f"Question: {question}"
     )
     out = llm.generate_json(prompt, Answer, tier="strong", system=ASK_SYSTEM)
     if not out:
@@ -397,5 +434,6 @@ def ask(symbol: str, question: str) -> dict:
         "sources": [{"source": c["source"], "page": c["page"]} for c in hits[:5]],
         "usage": usage.as_dict(),
     }
-    db.cache_set(key, res, ttl=24 * 3600)
+    if key:
+        db.cache_set(key, res, ttl=24 * 3600)
     return res

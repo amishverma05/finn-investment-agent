@@ -19,6 +19,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// Last response per path, kept in memory for this tab. When you come back to a screen it
+// renders straight away with this (then refreshes), so the page has its full height and
+// your scroll position can be restored.
+const memo = new Map<string, unknown>();
+
 /** Fetch `path` and keep the last good data while a new request is in flight. */
 export function useApi<T>(path: string | null) {
   const [nonce, setNonce] = useState(0);
@@ -34,7 +39,10 @@ export function useApi<T>(path: string | null) {
     let alive = true;
     const k = `${path}#${nonce}`;
     api<T>(path)
-      .then((data) => alive && setState({ key: k, data, error: null }))
+      .then((data) => {
+        memo.set(path, data);
+        if (alive) setState({ key: k, data, error: null });
+      })
       .catch((e) => alive && setState((s) => ({ ...s, key: k, error: e instanceof Error ? e.message : "Something went wrong" })));
     return () => {
       alive = false;
@@ -42,7 +50,9 @@ export function useApi<T>(path: string | null) {
   }, [path, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  return { data: state.data, error: state.error, loading: !!key && state.key !== key, reload };
+  const fresh = state.key === key;
+  const data = fresh ? state.data : ((path ? (memo.get(path) as T | undefined) : undefined) ?? state.data);
+  return { data, error: state.error, loading: !!key && !fresh, reload };
 }
 
 export type SearchHit = { symbol: string; name: string };

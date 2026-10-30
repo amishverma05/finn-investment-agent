@@ -216,12 +216,18 @@ def research_status(symbol: str) -> dict:
     return research.status(symbol)
 
 
+class Turn(BaseModel):
+    role: str  # "user" or "assistant"
+    text: str
+
+
 class Question(BaseModel):
     question: str
+    history: list[Turn] = []
 
 
 @app.post("/research/{symbol}/ask")
 def research_ask(symbol: str, q: Question) -> dict:
     if not q.question.strip():
         raise HTTPException(400, "Ask a question.")
-    return research.ask(symbol, q.question)
+    return research.ask(symbol, q.question, [t.model_dump() for t in q.history])

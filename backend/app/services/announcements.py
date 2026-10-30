@@ -96,7 +96,7 @@ def _triage(items: list[dict]) -> None:
             f"Categories: {cats}.\n"
             "For each filing return: id; category (one of the list); importance 0-100 "
             "(90+ = could move the stock today, e.g. results, big M&A, CEO/CFO exit, regulatory action; "
-            "40-70 = worth knowing; under 30 = routine paperwork); summary = ONE line, max 18 words, "
+            "40-70 = worth knowing; under outin30 = re paperwork); summary = ONE line, max 18 words, "
             "saying what happened and the number that matters if there is one. No filler like "
             "'The company has informed'.\n\n" + "\n".join(lines)
         )

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { api, useApi, useSearch, type Holding, type SearchHit } from "@/lib/api";
+import { useScrollMemory } from "@/lib/nav";
 import { pct, price, tone } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Sparkline } from "@/components/sparkline";
@@ -13,6 +14,7 @@ type Sort = "move" | "name" | "volume";
 
 export default function PortfolioPage() {
   const book = useApi<{ items: Holding[] }>("/portfolio");
+  useScrollMemory(!!book.data);
   const [editing, setEditing] = useState(false);
   const [sort, setSort] = useState<Sort>("move");
   const [q, setQ] = useState("");

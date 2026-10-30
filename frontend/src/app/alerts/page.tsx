@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { api, useApi, type Alerts, type Filing, type MarketAlert, type Settings } from "@/lib/api";
+import { useScrollMemory } from "@/lib/nav";
 import { headline, FilingCard } from "@/components/filing-card";
 import { pct, price, tone } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,7 @@ export default function AlertsPage() {
   const [hours, setHours] = useState(72);
   const [editing, setEditing] = useState(false);
   const alerts = useApi<Alerts>(`/alerts?hours=${hours}`);
+  useScrollMemory(!!alerts.data);
   const [draft, setDraft] = useState<Settings | null>(null);
   const rules = draft ?? alerts.data?.settings ?? null;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
