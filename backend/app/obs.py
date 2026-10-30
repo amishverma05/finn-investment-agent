@@ -47,7 +47,7 @@ STEP_EXPLAINED = {
     "pdf download": "Downloading a PDF document (filing, transcript or annual report). Saved to disk so it's only fetched once.",
     "pdf text extract": "Pulling the text out of a {mb} MB PDF so the app can search and read it.",
     "bm25 index build": "Building a keyword index over {chunks} text chunks so we can find the relevant passages quickly.",
-    "yahoo prices download": "Getting 6 months of daily closing prices and traded volume from Yahoo Finance for {tickers} stock(s).",
+    "yahoo prices download": "Getting 2 months of daily closing prices and traded volume from Yahoo Finance for {tickers} stock(s). Kept until the next market close (4 pm IST).",
     "digest: fetch NSE filings": "Collecting the last 30 days of NSE announcements for your {stocks} stocks, then keeping the last {hours} hours.",
     "digest: AI triage": "Asking the cheap AI model to summarise new filings in one line and judge how much each one matters.",
     "transcript → guidance": "Reading the {call} earnings-call transcript and pulling out what management promised (growth, margins, capex).",

@@ -139,10 +139,12 @@ def put_settings(patch: dict) -> dict:
 # ---------- Push: digest, filing insights, alerts ----------
 
 @app.get("/digest")
-def digest(hours: int = 24) -> dict:
+def digest(hours: int = 24, fast: bool = False) -> dict:
+    """fast=true: rule-ranked filings right away, using only AI summaries already saved.
+    The app shows that, then calls again without fast to fill in any missing summaries."""
     usage = llm.track_usage()
     symbols, names = _book()
-    out = announcements.digest(symbols, names, hours=hours)
+    out = announcements.digest(symbols, names, hours=hours, fast=fast)
     out["usage"] = usage.as_dict()
     return out
 

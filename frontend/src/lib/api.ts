@@ -148,6 +148,8 @@ export type Digest = {
   counts: Record<Tier, number>;
   items: Filing[];
   ai: boolean;
+  /** Filings still waiting for an AI one-liner (fast view only). */
+  ai_pending?: number;
   usage: Usage;
 };
 

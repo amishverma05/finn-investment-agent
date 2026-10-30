@@ -45,7 +45,14 @@ export default function BriefPage() {
     return () => clearTimeout(t);
   }, []);
 
-  const digest = useApi<Digest>(`/digest?hours=${hours}`);
+  // Two steps so filings appear fast: first the rule-ranked list (~2s, no new AI calls),
+  // then, only if some filings have no AI one-liner yet, the full version (adds ~5s).
+  const fast = useApi<Digest>(`/digest?hours=${hours}&fast=true`);
+  const pending = fast.data?.hours === hours ? (fast.data.ai_pending ?? 0) : 0;
+  const full = useApi<Digest>(pending > 0 ? `/digest?hours=${hours}` : null);
+  const current = [full.data, fast.data].find((d) => d?.hours === hours);
+  const digest = { data: current ?? fast.data, loading: fast.loading, error: fast.error, reload: fast.reload };
+  const summarising = pending > 0 && full.loading;
   const book = useApi<{ items: Holding[] }>("/portfolio");
   useScrollMemory(!!digest.data && !!book.data);
 
@@ -98,6 +105,13 @@ export default function BriefPage() {
           </p>
         ) : null}
       </section>
+
+      {summarising && (
+        <p className="mt-2 flex items-center gap-1.5 px-4 text-[11px] text-muted-foreground">
+          <Sparkles className="size-3 animate-pulse text-signal" />
+          AI is writing one-line summaries for {pending} new {pending === 1 ? "filing" : "filings"}…
+        </p>
+      )}
 
       <div className="no-scrollbar mt-4 flex gap-2 overflow-x-auto px-4">
         {WINDOWS.map((w) => (

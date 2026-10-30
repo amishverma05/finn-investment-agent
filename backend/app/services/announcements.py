@@ -73,8 +73,9 @@ TRIAGE_SYSTEM = (
 )
 
 
-def _triage(items: list[dict]) -> None:
-    """Add a one-line summary and a judged importance to items, using one cheap-model call per batch."""
+def _triage(items: list[dict], allow_new: bool = True) -> int:
+    """Add a one-line summary and a judged importance to items, using one cheap-model call per batch.
+    With allow_new=False only saved summaries are used (no AI call). Returns how many still need one."""
     todo = []
     for it in items:
         hit = db.cache_get(f"triage:{it['id']}")
@@ -82,9 +83,14 @@ def _triage(items: list[dict]) -> None:
             it["_triage"] = hit
         else:
             todo.append(it)
-    log.info("triage: %d cached, %d new%s", len(items) - len(todo), len(todo), "" if llm.available() else " (AI off)")
-    if not todo or not llm.available():
-        return
+    if not llm.available():
+        return 0
+    if not allow_new:
+        log.info("triage: %d saved, %d waiting for AI (fast view, no AI call now)", len(items) - len(todo), len(todo))
+        return len(todo)
+    log.info("triage: %d cached, %d new", len(items) - len(todo), len(todo))
+    if not todo:
+        return 0
 
     cats = ", ".join(classifier.CATEGORIES)
     for i in range(0, len(todo), 30):
@@ -96,7 +102,7 @@ def _triage(items: list[dict]) -> None:
             f"Categories: {cats}.\n"
             "For each filing return: id; category (one of the list); importance 0-100 "
             "(90+ = could move the stock today, e.g. results, big M&A, CEO/CFO exit, regulatory action; "
-            "40-70 = worth knowing; under outin30 = re paperwork); summary = ONE line, max 18 words, "
+            "40-70 = worth knowing; under 30 = routine paperwork); summary = ONE line, max 18 words, "
             "saying what happened and the number that matters if there is one. No filler like "
             "'The company has informed'.\n\n" + "\n".join(lines)
         )
@@ -109,9 +115,13 @@ def _triage(items: list[dict]) -> None:
             if t:
                 db.cache_set(f"triage:{it['id']}", t)
                 it["_triage"] = t
+    return sum(1 for it in todo if "_triage" not in it)  # AI failed for these; they keep rule-based ranking
 
 
-def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: bool = True) -> dict:
+def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: bool = True, fast: bool = False) -> dict:
+    """Filings across the portfolio for the last `hours`, ranked by importance.
+    fast=True: no new AI calls, only summaries already saved, so it returns in ~2s.
+    `ai_pending` says how many filings still need an AI summary (the app then asks again without fast)."""
     hours = max(1, min(hours, MAX_DAYS * 24))
     now = dt.datetime.now(IST)
     since = now - dt.timedelta(hours=hours)
@@ -147,10 +157,14 @@ def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: b
                 "importance": classifier.score(cat, title, text),
             })
 
+    ai_pending = 0
     if use_ai:
         to_triage = [it for it in items if not it["confident"] or it["importance"] >= 35]
-        with timed(log, "digest: AI triage", filings=len(items), sent_for_triage=len(to_triage)):
-            _triage(to_triage)
+        if fast:
+            ai_pending = _triage(to_triage, allow_new=False)
+        else:
+            with timed(log, "digest: AI triage", filings=len(items), sent_for_triage=len(to_triage)):
+                ai_pending = _triage(to_triage)
 
     for it in items:
         t = it.pop("_triage", None)
@@ -177,6 +191,7 @@ def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: b
         "counts": counts,
         "items": items,
         "ai": llm.available() and use_ai,
+        "ai_pending": ai_pending,
     }
 
 

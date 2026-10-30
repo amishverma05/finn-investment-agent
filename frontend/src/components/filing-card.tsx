@@ -60,7 +60,9 @@ export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; 
   // The whole card links to the company's research page (an invisible link stretched over it).
   // Buttons and links inside sit above it (relative z-10), so they keep their own action.
   return (
-    <article
+    <motion.article
+      layout="position"
+      transition={{ layout: { duration: 0.3, ease: [0.2, 0.8, 0.2, 1] } }}
       className={cn(
         "group relative px-4 py-3.5 transition-colors active:bg-foreground/[0.04]",
         !compact && "mx-3 mb-2.5 overflow-hidden rounded-2xl border border-border bg-card px-4 py-4 hover:border-foreground/20",
@@ -123,7 +125,7 @@ export function FilingCard({ f, isNew, compact }: { f: Filing; isNew?: boolean; 
           </motion.div>
         )}
       </AnimatePresence>
-    </article>
+    </motion.article>
   );
 }
 

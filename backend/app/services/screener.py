@@ -19,11 +19,15 @@ def search(q: str) -> list[dict]:
 
     def load():
         data = net.get_json(f"{BASE}/api/company/search/", params={"q": q, "v": 3, "fts": 1}, referer=BASE)
-        out = []
+        out, seen = [], set()
         for d in data:
             m = re.match(r"/company/([^/]+)/", d.get("url") or "")
-            if d.get("id") and m:
-                out.append({"symbol": m.group(1), "name": d["name"]})
+            # Companies without a ticker (often delisted) come back as /company/id/<number>/;
+            # they can't be researched, so skip them. Also drop duplicates.
+            if not d.get("id") or not m or m.group(1) == "id" or m.group(1) in seen:
+                continue
+            seen.add(m.group(1))
+            out.append({"symbol": m.group(1), "name": d["name"]})
         return out
 
     try:

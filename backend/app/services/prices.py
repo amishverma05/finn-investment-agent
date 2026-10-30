@@ -1,8 +1,10 @@
 """End-of-day price and volume from Yahoo Finance, plus unusual-move detection."""
 
+import datetime as dt
 import logging
 import math
 import warnings
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -12,6 +14,12 @@ from app.obs import timed
 
 log = logging.getLogger("finn.prices")
 warnings.filterwarnings("ignore", module="yfinance")
+
+IST = ZoneInfo("Asia/Kolkata")
+# ~40 trading days: enough for the 20-day volume average, the 1-month change and the 30-day chart.
+HISTORY_PERIOD = "2mo"
+# NSE closes at 3:30 pm; by 4 pm the day's final close and volume are on Yahoo.
+EOD_HOUR = 16
 
 
 def _num(x) -> float | None:
@@ -25,7 +33,7 @@ def _num(x) -> float | None:
 def _download(symbols: tuple[str, ...]) -> dict:
     tickers = [s + ".NS" for s in symbols]
     with timed(log, "yahoo prices download", tickers=len(tickers)) as t:
-        df = yf.download(tickers, period="6mo", interval="1d", progress=False, auto_adjust=False, group_by="ticker", threads=True)
+        df = yf.download(tickers, period=HISTORY_PERIOD, interval="1d", progress=False, auto_adjust=False, group_by="ticker", threads=True)
         t["rows"] = len(df)
     out = {}
     for s in symbols:
@@ -44,10 +52,22 @@ def _download(symbols: tuple[str, ...]) -> dict:
     return out
 
 
+def seconds_until_next_close(now: dt.datetime | None = None) -> float:
+    """Seconds until the next 4 pm IST on a weekday: when end-of-day prices next change."""
+    now = now or dt.datetime.now(IST)
+    target = now.replace(hour=EOD_HOUR, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += dt.timedelta(days=1)
+    while target.weekday() >= 5:  # Saturday, Sunday
+        target += dt.timedelta(days=1)
+    return max(60.0, (target - now).total_seconds())
+
+
 def history(symbols: list[str]) -> dict:
-    """Daily close/volume series for each symbol, cached for 15 minutes."""
+    """Daily close/volume series for each symbol. Prices are end-of-day, so they're kept
+    until the next 4 pm IST close instead of being fetched again on every visit."""
     key = "prices:" + ",".join(sorted(symbols))
-    return db.cached(key, 15 * 60, lambda: _download(tuple(sorted(symbols))) or None) or {}
+    return db.cached(key, seconds_until_next_close(), lambda: _download(tuple(sorted(symbols))) or None) or {}
 
 
 def snapshot(symbols: list[str], lookback: int = 20) -> dict[str, dict]:
