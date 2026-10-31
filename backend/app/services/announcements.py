@@ -22,24 +22,226 @@ NSE_URL = "https://www.nseindia.com/api/corporate-announcements"
 MAX_DAYS = 30
 
 
-def _fetch_symbol(symbol: str) -> list[dict]:
-    """The last 30 days of filings for one stock. Every time window filters this same list."""
+# ---------- Where filings come from ----------
+#
+# 1. NSE's announcements API: complete 30-day history per stock. Blocked from many cloud
+#    servers (NSE's firewall answers 403 or just hangs), so it gets a short time limit and,
+#    once blocked, is skipped for a while.
+# 2. NSE's RSS feed of all companies' announcements (on nsearchives, which isn't blocked):
+#    only the last ~18 hours, so the scheduler saves what it sees into the `filings_store`
+#    table and history builds up over time.
+# 3. screener.in's "recent announcements" per company (5 latest, dates only): used once to
+#    backfill the last few days when the API is blocked and nothing is saved yet.
+
+NSE_TIMEOUT = 8.0          # seconds; a blocked request otherwise hangs for a minute
+NSE_BLOCK_PAUSE = 30 * 60  # after a block, skip the API for this long
+RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
+EQUITY_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+
+db.execute("CREATE TABLE IF NOT EXISTS filings_store (id TEXT PRIMARY KEY, symbol TEXT, time REAL, row TEXT)")
+
+
+def _nse_blocked() -> bool:
+    return (db.kv_get("nse_blocked_until") or 0) > dt.datetime.now().timestamp()
+
+
+def _mark_nse_blocked(reason: str) -> None:
+    if not _nse_blocked():
+        log.warning("NSE API is blocking this server (%s); using the RSS feed and saved filings for %d min\n"
+                    "    ↳ NSE's firewall refuses many cloud servers. Filings still arrive via NSE's RSS feed.",
+                    reason, NSE_BLOCK_PAUSE // 60)
+    db.kv_set("nse_blocked_until", dt.datetime.now().timestamp() + NSE_BLOCK_PAUSE)
+
+
+def _api_rows(symbol: str) -> list[dict] | None:
+    """30 days from NSE's API, or None if it's unavailable."""
+    if _nse_blocked():
+        return None
     to = dt.datetime.now(IST).date()
     frm = to - dt.timedelta(days=MAX_DAYS)
     key = f"nse_ann:{symbol}:{to}"
 
     def load():
+        import httpx
+
         try:
-            data = net.get_json(NSE_URL, params={
-                "index": "equities", "symbol": symbol,
-                "from_date": frm.strftime("%d-%m-%Y"), "to_date": to.strftime("%d-%m-%Y"),
-            })
+            with timed(log, "http json", url=NSE_URL, arg=symbol) as t:
+                r = net.client.get(
+                    NSE_URL,
+                    params={"index": "equities", "symbol": symbol,
+                            "from_date": frm.strftime("%d-%m-%Y"), "to_date": to.strftime("%d-%m-%Y")},
+                    headers={"Accept": "application/json", "Referer": "https://www.nseindia.com/"},
+                    timeout=NSE_TIMEOUT,
+                )
+                t["status"] = r.status_code
+            if r.status_code == 403:
+                _mark_nse_blocked("403 Access Denied")
+                return None
+            r.raise_for_status()
+            data = r.json()
+        except httpx.TimeoutException:
+            _mark_nse_blocked(f"no reply in {NSE_TIMEOUT:.0f}s")
+            return None
         except Exception as e:  # noqa: BLE001
             log.warning("NSE fetch failed for %s: %s", symbol, e)
             return None
         return data if isinstance(data, list) else []
 
-    return db.cached(key, 10 * 60, load) or []
+    return db.cached(key, 10 * 60, load)
+
+
+def _saved_rows(symbol: str) -> list[dict]:
+    since = (dt.datetime.now(IST) - dt.timedelta(days=MAX_DAYS)).timestamp()
+    import json
+
+    return [json.loads(r[0]) for r in db.query(
+        "SELECT row FROM filings_store WHERE symbol = ? AND time > ? ORDER BY time DESC", (symbol, since))]
+
+
+def _save(symbol: str, row: dict) -> bool:
+    import json
+
+    t = _parse_time(row.get("an_dt"))
+    if not t:
+        return False
+    return bool(db.execute(
+        "INSERT OR IGNORE INTO filings_store (id, symbol, time, row) VALUES (?, ?, ?, ?)",
+        (row["seq_id"], symbol, t.timestamp(), json.dumps(row)),
+    ))
+
+
+def _fetch_symbol(symbol: str) -> list[dict]:
+    """The last 30 days of filings for one stock: NSE's API when reachable (complete);
+    otherwise the filings saved from the RSS feed and the screener backfill."""
+    api = _api_rows(symbol)
+    if api is not None:
+        return api
+    saved = _saved_rows(symbol)
+    if not saved:
+        _backfill_from_screener(symbol)
+        saved = _saved_rows(symbol)
+    return saved
+
+
+def _norm_name(name: str) -> str:
+    n = (name or "").lower().replace("&", " and ")
+    n = re.sub(r"[^a-z0-9 ]", " ", n)
+    n = re.sub(r"\b(limited|ltd|the)\b", " ", n)
+    return " ".join(n.split())
+
+
+def _official_names() -> dict[str, str]:
+    """NSE's official company name (normalised) -> symbol, refreshed daily."""
+
+    def load():
+        import csv
+        import io
+
+        r = net.client.get(EQUITY_LIST_URL, headers={"Referer": "https://www.nseindia.com/"}, timeout=20)
+        r.raise_for_status()
+        return {_norm_name(x["NAME OF COMPANY"]): x["SYMBOL"].strip() for x in csv.DictReader(io.StringIO(r.text))}
+
+    try:
+        return db.cached("nse_equity_names", 24 * 3600, load) or {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't load NSE company list: %s", e)
+        return {}
+
+
+def ingest_rss(symbols: list[str]) -> int:
+    """Save new portfolio filings from NSE's RSS feed. Returns how many were new."""
+    want = set(symbols)
+    names = _official_names()
+    try:
+        with timed(log, "nse rss feed") as t:
+            r = net.client.get(RSS_URL, headers={"Referer": "https://www.nseindia.com/"}, timeout=20)
+            r.raise_for_status()
+            items = re.findall(r"<item>(.*?)</item>", r.text, re.S)
+            t["items"] = len(items)
+    except Exception as e:  # noqa: BLE001
+        log.warning("NSE RSS feed failed: %s", e)
+        return 0
+    import html as htmllib
+
+    def field(item: str, tag: str) -> str:
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", item, re.S)
+        return htmllib.unescape(m.group(1)).strip() if m else ""
+
+    new = 0
+    for it in items:
+        title, link, desc, when = field(it, "title"), field(it, "link"), field(it, "description"), field(it, "pubDate")
+        prefix = re.match(r".*/corporate/([A-Z0-9&-]+)_\d", link)
+        symbol = names.get(_norm_name(title)) or (prefix.group(1) if prefix else None)
+        if symbol not in want:
+            continue
+        text, _, subject = desc.partition("|SUBJECT:")
+        row = {
+            "seq_id": "rss-" + hashlib.sha1(link.encode()).hexdigest()[:12],
+            "an_dt": when,
+            "desc": subject.strip() or "General Updates",
+            "attchmntText": text.strip(),
+            "attchmntFile": link if link.lower().endswith(".pdf") else None,
+            "sm_name": title,
+            "source": "nse-rss",
+        }
+        new += _save(symbol, row)
+    if new:
+        log.info("NSE RSS: saved %d new filing(s) for your stocks", new)
+    return new
+
+
+def _screener_id(symbol: str) -> int | None:
+    def load():
+        data = net.get_json("https://www.screener.in/api/company/search/",
+                            params={"q": symbol, "v": 3, "fts": 1}, referer="https://www.screener.in/")
+        for d in data:
+            if re.match(rf"/company/{re.escape(symbol)}/", d.get("url") or "", re.I) and d.get("id"):
+                return d["id"]
+        return None
+
+    try:
+        return db.cached(f"scr_id:{symbol}", 30 * 24 * 3600, load)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _backfill_from_screener(symbol: str) -> None:
+    """Save a stock's latest few filings from screener.in (when NSE's API is blocked).
+    Runs at most once a day per stock."""
+    if db.cache_get(f"scr_backfill:{symbol}"):
+        return
+    db.cache_set(f"scr_backfill:{symbol}", True, ttl=24 * 3600)
+    sid = _screener_id(symbol)
+    if not sid:
+        return
+    try:
+        page = net.get_text(f"https://www.screener.in/announcements/recent/{sid}/")
+    except Exception as e:  # noqa: BLE001
+        log.warning("screener announcements failed for %s: %s", symbol, e)
+        return
+    today = dt.datetime.now(IST).date()
+    saved = 0
+    for url, inner in re.findall(r'<a href="(https://www\.bseindia\.com/stockinfo/AnnPdfOpen[^"]+)"[^>]*>(.*?)</a>', page, re.S):
+        sub = re.search(r'<div[^>]*>(.*?)</div>', inner, re.S)
+        title = _clean(re.sub("<[^>]+>", " ", inner[: sub.start()] if sub else inner))
+        detail = _clean(re.sub("<[^>]+>", " ", sub.group(1))) if sub else ""
+        m = re.match(r"(\d{1,2} [A-Z][a-z]{2})(?: \d{4})?\s*-?\s*(.*)", detail)
+        if not m:
+            continue
+        day = dt.datetime.strptime(f"{m.group(1)} {today.year}", "%d %b %Y").date()
+        if day > today:
+            day = day.replace(year=today.year - 1)
+        row = {
+            "seq_id": "scr-" + hashlib.sha1(url.encode()).hexdigest()[:12],
+            "an_dt": f"{day.strftime('%d-%b-%Y')} 12:00:00",  # screener shows the date only
+            "desc": title,
+            "attchmntText": m.group(2) or title,
+            "attchmntFile": url,
+            "sm_name": symbol,
+            "source": "screener",
+        }
+        saved += _save(symbol, row)
+    log.info("screener backfill %s: saved %d filing(s)", symbol, saved)
 
 
 def _parse_time(s: str) -> dt.datetime | None:
@@ -126,6 +328,11 @@ def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: b
     now = dt.datetime.now(IST)
     since = now - dt.timedelta(hours=hours)
 
+    # Keep the saved filings topped up from NSE's RSS feed (at most every 10 minutes).
+    if not db.cache_get("rss_ingested"):
+        db.cache_set("rss_ingested", True, ttl=10 * 60)
+        ingest_rss(symbols)
+
     with timed(log, "digest: fetch NSE filings", stocks=len(symbols), hours=hours):
         ctx = copy_context()
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -140,9 +347,13 @@ def digest(symbols: list[str], names: dict[str, str], hours: int = 24, use_ai: b
             text = _clean(a.get("attchmntText"))
             title = _clean(a.get("desc"))
             dedupe_key = (symbol, text[:160].lower())
-            if dedupe_key in seen:
+            url = a.get("attchmntFile")
+            # The same filing can come from the API and the RSS feed: match on text or PDF link.
+            if dedupe_key in seen or (url and url in seen):
                 continue
             seen.add(dedupe_key)
+            if url:
+                seen.add(url)
             cat, confident = classifier.classify(title, text)
             items.append({
                 "id": str(a.get("seq_id") or hashlib.sha1(repr(dedupe_key).encode()).hexdigest()[:12]),

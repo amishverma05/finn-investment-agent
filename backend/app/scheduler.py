@@ -22,7 +22,7 @@ import uuid
 from app import db, llm, portfolio
 from app.config import settings
 from app.obs import timed
-from app.services import alerts, prices, push
+from app.services import alerts, announcements, prices, push
 
 log = logging.getLogger("finn.scheduler")
 
@@ -56,8 +56,11 @@ def _symbols() -> list[str]:
 
 def _job_filings(_: dt.datetime) -> dict:
     usage = llm.track_usage()
+    # Save new filings from NSE's RSS feed first: the only live source on servers NSE blocks.
+    saved = announcements.ingest_rss(_symbols())
+    db.cache_set("rss_ingested", True, ttl=10 * 60)
     new = alerts.check(hours=72)
-    return {"new_alerts": len(new), "ai_calls": usage.calls}
+    return {"rss_saved": saved, "new_alerts": len(new), "ai_calls": usage.calls}
 
 
 def _job_prices(now: dt.datetime) -> dict:
