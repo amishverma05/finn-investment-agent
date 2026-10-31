@@ -1,0 +1,23 @@
+# Render Blueprint for the FINN backend (FastAPI + background scheduler).
+# Render dashboard → New → Blueprint → pick this repo. You'll be asked for the secret keys.
+services:
+  - type: web
+    name: finn-api
+    runtime: python
+    plan: free
+    region: singapore          # closest Render region to India (NSE/BSE, Yahoo .NS)
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    # One worker: the background scheduler must run in exactly one process.
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: GEMINI_API_KEY
+        sync: false            # entered in the Render dashboard, never stored in git
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        value: https://finn-investment-agent-ten.vercel.app

@@ -1,22 +1,24 @@
 # --- API server ---
-fastapi
-uvicorn[standard]
-pydantic
-pydantic-settings
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.2
 
 # --- Data: prices, announcements, screener.in ---
-yfinance
-pandas
-httpx
-beautifulsoup4
-lxml
+yfinance==1.7.0
+pandas==3.1.0
+httpx==0.28.1
+beautifulsoup4==4.15.0
+lxml==6.1.3
 
 # --- Reading PDFs (results filings, annual reports, transcripts) ---
-pymupdf
+pymupdf==2.0
 
 # --- Picking relevant passages from long documents ---
-rank-bm25
+rank-bm25==0.2.2
 
 # --- LLM (Gemini: cheap model for bulk extraction, stronger model for reasoning) ---
-google-genai
-pywebpush
+google-genai==2.33.0
+
+# --- Push notifications (alerts on phone/browser) ---
+pywebpush==2.5.0
