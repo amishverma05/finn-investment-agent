@@ -206,9 +206,19 @@ export type MarketAlert = {
   close: number;
   price_trigger: boolean;
   volume_trigger: boolean;
+  alert_id?: string;
+  /** When FINN first noticed this alert (ms). */
+  first_seen?: number;
 };
 
-export type Alerts = { settings: Settings; market: MarketAlert[]; filings: Filing[] };
+export type AlertFiling = Filing & { alert_id?: string; first_seen?: number };
+
+export type Alerts = { settings: Settings; market: MarketAlert[]; filings: AlertFiling[] };
+
+export type Unread = {
+  count: number;
+  latest: { id: string; title: string; body: string; url: string; first_seen: number } | null;
+};
 
 export type Flag = { level: "good" | "warn" | "bad" | "info"; area: string; text: string };
 

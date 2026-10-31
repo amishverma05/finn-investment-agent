@@ -73,3 +73,32 @@ def kv_set(key: str, value: Any) -> None:
     with _lock:
         _conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", (key, json.dumps(value)))
         _conn.commit()
+
+
+# ---------- Small helpers for the other tables (alerts, push subscriptions) ----------
+
+def execute(sql: str, params: tuple = ()) -> int:
+    """Run a write; returns the number of rows changed."""
+    with _lock:
+        cur = _conn.execute(sql, params)
+        _conn.commit()
+        return cur.rowcount
+
+
+def query(sql: str, params: tuple = ()) -> list[tuple]:
+    with _lock:
+        return _conn.execute(sql, params).fetchall()
+
+
+_conn.execute(
+    """CREATE TABLE IF NOT EXISTS alerts (
+        id TEXT PRIMARY KEY,      -- one row per event: mkt:<symbol>:<date> or fil:<filing id>
+        kind TEXT, symbol TEXT,
+        event_time REAL,          -- when it happened (filing time / market close)
+        first_seen REAL,          -- when FINN first noticed it
+        title TEXT, body TEXT, url TEXT,
+        notify INTEGER            -- 0 = push pending, 1 = pushed, -1 = never push (old event)
+    )"""
+)
+_conn.execute("CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created REAL)")
+_conn.commit()

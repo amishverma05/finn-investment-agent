@@ -120,3 +120,10 @@ def unusual_moves(symbols: list[str], price_move_pct: float, volume_multiple: fl
             })
     alerts.sort(key=lambda a: (a["date"], abs(a["change_pct"])), reverse=True)
     return alerts
+
+
+def refresh(symbols: list[str]) -> dict:
+    """Fetch prices again now (used by the scheduler right after the 4 pm close)."""
+    key = "prices:" + ",".join(sorted(symbols))
+    db.execute("DELETE FROM cache WHERE key = ?", (key,))
+    return history(symbols)

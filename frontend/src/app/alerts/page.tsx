@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
-import { SlidersHorizontal } from "lucide-react";
-import { api, useApi, type Alerts, type Filing, type MarketAlert, type Settings } from "@/lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BellOff, BellRing, Loader2, SlidersHorizontal } from "lucide-react";
+import { api, readLS, useApi, writeLS, type AlertFiling, type Alerts, type Filing, type MarketAlert, type Settings } from "@/lib/api";
+import { disablePush, enablePush, getPushState, sendTestPush, type PushState } from "@/lib/push";
 import { useScrollMemory } from "@/lib/nav";
 import { headline, FilingCard } from "@/components/filing-card";
 import { pct, price, tone } from "@/lib/format";
@@ -39,6 +40,30 @@ export default function AlertsPage() {
   const [editing, setEditing] = useState(false);
   const alerts = useApi<Alerts>(`/alerts?hours=${hours}`);
   useScrollMemory(!!alerts.data);
+
+  // "New" = first noticed after your previous visit to this screen.
+  const [lastSeen] = useState<number>(() => (typeof window === "undefined" ? 0 : Number(readLS("finn.alertsSeen")) || 0));
+  const isNew = (firstSeen?: number) => lastSeen > 0 && !!firstSeen && firstSeen > lastSeen;
+  useEffect(() => {
+    // Mark everything as seen after a moment on this screen (clears the tab badge).
+    const t = setTimeout(() => writeLS("finn.alertsSeen", String(Date.now())), 3000);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Opened from a notification (?focus=<alert id>): scroll to that alert and highlight it once.
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!alerts.data || focused.current) return;
+    focused.current = true;
+    const id = new URLSearchParams(window.location.search).get("focus");
+    const el = id ? document.getElementById(`alert-${id}`) : null;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.add("ring-2", "ring-signal/70", "rounded-2xl");
+      setTimeout(() => el.classList.remove("ring-2", "ring-signal/70"), 2500);
+    });
+  }, [alerts.data]);
   const [draft, setDraft] = useState<Settings | null>(null);
   const rules = draft ?? alerts.data?.settings ?? null;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,13 +90,15 @@ export default function AlertsPage() {
           Math.abs(new Date(f.time).getTime() - new Date(m.date + "T15:30:00+05:30").getTime()) < 2.5 * 864e5,
       ),
     }));
-    type Row = { t: number; market?: (typeof market)[number]; filing?: Filing };
+    type Row = { t: number; market?: (typeof market)[number]; filing?: AlertFiling };
     const rows: Row[] = [
       ...market.map((m) => ({ t: new Date(m.date + "T15:30:00+05:30").getTime(), market: m })),
       ...filings.map((f) => ({ t: new Date(f.time).getTime(), filing: f })),
     ];
     return rows.sort((a, b) => b.t - a.t);
   }, [alerts.data]);
+
+  const newCount = feed.filter((r) => isNew(r.market?.first_seen ?? r.filing?.first_seen)).length;
 
   return (
     <main>
@@ -148,6 +175,10 @@ export default function AlertsPage() {
         </div>
       )}
 
+      <div className="mt-2.5 px-3">
+        <PushCard />
+      </div>
+
       <div className="no-scrollbar mt-4 flex gap-2 overflow-x-auto px-4">
         {[
           [24, "Today"],
@@ -160,7 +191,19 @@ export default function AlertsPage() {
         ))}
       </div>
 
-      <SectionTitle count={feed.length}>Triggered</SectionTitle>
+      <SectionTitle
+        count={feed.length}
+        right={
+          newCount > 0 ? (
+            <span className="text-[11px] text-signal">
+              {newCount} new since{" "}
+              {new Date(lastSeen).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}
+            </span>
+          ) : undefined
+        }
+      >
+        Triggered
+      </SectionTitle>
 
       {alerts.error && <ErrorNote message={alerts.error} onRetry={alerts.reload} />}
       {alerts.loading && !alerts.data && (
@@ -177,9 +220,13 @@ export default function AlertsPage() {
         )}
         {feed.map((row) =>
           row.market ? (
-            <MarketRow key={`m-${row.market.symbol}-${row.market.date}`} a={row.market} related={row.market.related} />
+            <div key={`m-${row.market.symbol}-${row.market.date}`} id={`alert-${row.market.alert_id}`} className="transition-shadow">
+              <MarketRow a={row.market} related={row.market.related} isNew={isNew(row.market.first_seen)} />
+            </div>
           ) : (
-            <FilingCard key={`f-${row.filing!.id}`} f={row.filing!} />
+            <div key={`f-${row.filing!.id}`} id={`alert-${row.filing!.alert_id}`} className="transition-shadow">
+              <FilingCard f={row.filing!} isNew={isNew(row.filing!.first_seen)} />
+            </div>
           ),
         )}
       </div>
@@ -187,7 +234,7 @@ export default function AlertsPage() {
   );
 }
 
-function MarketRow({ a, related }: { a: MarketAlert; related?: Filing }) {
+function MarketRow({ a, related, isNew }: { a: MarketAlert; related?: Filing; isNew?: boolean }) {
   return (
     <Link href={`/research/${a.symbol}`} className="mx-3 mb-2.5 block rounded-2xl border border-border bg-card p-4 active:scale-[0.99]">
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -197,6 +244,7 @@ function MarketRow({ a, related }: { a: MarketAlert; related?: Filing }) {
         <span className="text-faint">·</span>
         <span>{new Date(a.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
         <span className="num ml-auto text-foreground">{price(a.close)}</span>
+        {isNew && <span className="size-1.5 rounded-full bg-signal" aria-label="new" />}
       </div>
       <div className="mt-2 flex items-center gap-2">
         <span className={cn("num text-xl font-medium", tone(a.change_pct))}>{pct(a.change_pct, 2)}</span>
@@ -255,5 +303,80 @@ function Slider({
         className="w-full accent-[var(--signal)]"
       />
     </label>
+  );
+}
+
+/** Turn phone/browser notifications on or off for this device, and send a test. */
+function PushCard() {
+  const [state, setState] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPushState().then(setState).catch(() => setState("unsupported"));
+  }, []);
+
+  async function run(action: () => Promise<PushState | void>, done?: string) {
+    setBusy(true);
+    setNote(null);
+    try {
+      const next = await action();
+      if (next) setState(next);
+      if (done) setNote(done);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (state === null) return null;
+  const on = state === "on";
+  return (
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <span className={cn("mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full", on ? "bg-signal/15 text-signal" : "bg-raised text-muted-foreground")}>
+          {on ? <BellRing className="size-4" /> : <BellOff className="size-4" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[14px] font-medium">{on ? "Notifications on" : "Get notified"}</p>
+          <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
+            {state === "on" && "FINN will notify this device when an alert fires, even when the app is closed. Quiet 10 pm – 7 am."}
+            {state === "off" && "Be told the moment a material filing or unusual move hits your stocks, even when FINN is closed."}
+            {state === "blocked" && "Notifications are blocked for this site. Allow them in your browser's site settings, then come back."}
+            {state === "ios-install" && "On iPhone, add FINN to your Home Screen first (Share → Add to Home Screen), then open it from there."}
+            {state === "unsupported" && "This browser can't receive notifications here. Try Chrome, or open FINN over https / localhost."}
+          </p>
+          {(state === "on" || state === "off") && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {on ? (
+                <>
+                  <button
+                    disabled={busy}
+                    onClick={() => run(sendTestPush, "Test alert sent. It should appear in a few seconds.")}
+                    className="rounded-full bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+                  >
+                    Send me a test alert
+                  </button>
+                  <button disabled={busy} onClick={() => run(disablePush)} className="rounded-full border border-border px-3 py-1.5 text-xs disabled:opacity-50">
+                    Turn off
+                  </button>
+                </>
+              ) : (
+                <button
+                  disabled={busy}
+                  onClick={() => run(enablePush)}
+                  className="rounded-full bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+                >
+                  Turn on notifications
+                </button>
+              )}
+              {busy && <Loader2 className="size-4 animate-spin self-center text-muted-foreground" />}
+            </div>
+          )}
+          {note && <p className="mt-2 text-[11px] text-muted-foreground">{note}</p>}
+        </div>
+      </div>
+    </Card>
   );
 }

@@ -1,20 +1,29 @@
 import logging
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import llm, portfolio
+from app import llm, portfolio, scheduler
 from app.config import settings
 from app.obs import SLOW_SECONDS, setup_logging, timed
-from app.services import announcements, insights, prices, research, screener
+from app.services import alerts as alert_service
+from app.services import announcements, insights, prices, push, research, screener
 
 setup_logging()
 
 log = logging.getLogger("finn.api")
 
-app = FastAPI(title="FINN API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    scheduler.start()  # background jobs: filings, prices, alerts, push notifications
+    yield
+    scheduler.stop()
+
+
+app = FastAPI(title="FINN API", version="0.1.0", lifespan=lifespan)
 
 
 # What each API request means in plain words, matched by path (first match wins).
@@ -33,6 +42,10 @@ REQUEST_EXPLAINED = [
     ("POST", "/analysis", "Research: starting the AI analysis (or returning the saved one)."),
     ("GET", "/analysis", "Research: the app is checking whether the AI analysis has finished."),
     ("POST", "/ask", "Research: answering your question from the company's filings."),
+    ("POST", "/push/subscribe", "Notifications: this device turned on push alerts."),
+    ("POST", "/push/unsubscribe", "Notifications: this device turned off push alerts."),
+    ("POST", "/push/test", "Notifications: sending a test alert to this device."),
+    ("POST", "/jobs/run", "Running background jobs now (filings / prices)."),
 ]
 
 
@@ -50,7 +63,10 @@ async def log_requests(request: Request, call_next):
     path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
     what = _explain_request(request.method, request.url.path)
     # The research page polls every 2s while the AI works; keep those quiet.
-    quiet = (request.method == "GET" and request.url.path.endswith("/analysis")) or request.url.path == "/health"
+    quiet = (
+        (request.method == "GET" and request.url.path.endswith("/analysis"))
+        or request.url.path in ("/health", "/alerts/unread", "/push/key", "/jobs/status")
+    )
     if what and not quiet:
         log.info("%s %s\n    ↳ %s", request.method, path, what)
     try:
@@ -117,7 +133,9 @@ def add_holding(h: Holding) -> dict:
             raise HTTPException(404, f"Couldn't find {sym} on NSE.")
         name = d["name"]
     items.append({"symbol": sym, "name": name, "sector": h.sector or ""})
-    return {"items": portfolio.set_portfolio(items)}
+    out = {"items": portfolio.set_portfolio(items)}
+    scheduler.run_soon("filings", "prices")  # start watching the new stock right away
+    return out
 
 
 @app.delete("/portfolio/{symbol}")
@@ -172,19 +190,75 @@ def filing_insight(item_id: str) -> dict:
 
 @app.get("/alerts")
 def alerts(hours: int = 72) -> dict:
-    s = portfolio.get_settings()
-    symbols, names = _book()
-    market = prices.unusual_moves(
-        symbols, s["price_move_pct"], s["volume_multiple"], s["volume_lookback"], days=max(1, hours // 24 + 1),
+    """Alerts in the window. Each is recorded the first time it's seen (for "new" marks and
+    one push per event); `first_seen` (ms) on each says when FINN first noticed it."""
+    cur = alert_service.current(hours)
+    alert_service.record(cur)
+    return alert_service.annotate(cur)
+
+
+@app.get("/alerts/unread")
+def alerts_unread(since: int = 0) -> dict:
+    """For the Alerts tab badge and the in-app banner: alerts first seen after `since` (ms)."""
+    return alert_service.unread(since)
+
+
+# ---------- Push notifications ----------
+
+@app.get("/push/key")
+def push_key() -> dict:
+    return {"public_key": push.public_key()}
+
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict[str, str]
+
+
+@app.post("/push/subscribe")
+def push_subscribe(sub: PushSubscription) -> dict:
+    push.subscribe(sub.model_dump())
+    return {"ok": True}
+
+
+class Endpoint(BaseModel):
+    endpoint: str
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(e: Endpoint) -> dict:
+    push.unsubscribe(e.endpoint)
+    return {"ok": True}
+
+
+@app.post("/push/test")
+def push_test(e: Endpoint) -> dict:
+    """Send a sample alert to this device so you can see what notifications look like."""
+    sent = push.send(
+        {
+            "title": "FINN test alert",
+            "body": "This is how alerts arrive: results, management changes and unusual moves in your stocks.",
+            "url": "/alerts",
+            "tag": "finn-test",
+        },
+        endpoint=e.endpoint,
     )
-    for a in market:
-        a["company"] = names.get(a["symbol"], a["symbol"])
-    filings = [
-        {**i, "kind": "filing"}
-        for i in announcements.digest(symbols, names, hours=hours)["items"]
-        if i["category"] in s["alert_categories"] and i["importance"] >= 50
-    ]
-    return {"settings": s, "market": market, "filings": filings}
+    if not sent:
+        raise HTTPException(400, "Couldn't reach this device. Turn notifications off and on again.")
+    return {"ok": True}
+
+
+# ---------- Background jobs ----------
+
+@app.get("/jobs/status")
+def jobs_status() -> dict:
+    return scheduler.status()
+
+
+@app.post("/jobs/run")
+def jobs_run(job: str = "filings") -> dict:
+    scheduler.run_soon(*job.split(","))
+    return {"queued": job.split(","), "note": "Runs within 30 seconds."}
 
 
 # ---------- Pull: research ----------

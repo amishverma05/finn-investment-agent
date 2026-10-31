@@ -19,3 +19,4 @@ rank-bm25
 
 # --- LLM (Gemini: cheap model for bulk extraction, stronger model for reasoning) ---
 google-genai
+pywebpush

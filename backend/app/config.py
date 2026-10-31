@@ -25,6 +25,12 @@ class Settings(BaseSettings):
 
     frontend_origin: str = "http://localhost:3000"
 
+    # Background jobs (filings, prices, alerts, push notifications). Turn off with SCHEDULER_ENABLED=false.
+    scheduler_enabled: bool = True
+    # Contact sent with push notifications (push services require one): a mailto: address
+    # or an https:// site. Empty = the frontend's https address, or a placeholder locally.
+    push_contact: str = ""
+
     # Logging: INFO shows every step with timings; DEBUG adds cache hits.
     log_level: str = "INFO"
     slow_seconds: float = 2.0
