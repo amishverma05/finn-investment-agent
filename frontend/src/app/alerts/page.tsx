@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellOff, BellRing, Loader2, SlidersHorizontal } from "lucide-react";
 import { api, readLS, useApi, writeLS, type AlertFiling, type Alerts, type Filing, type MarketAlert, type Settings } from "@/lib/api";
-import { disablePush, enablePush, getPushState, sendTestPush, type PushState } from "@/lib/push";
+import { disablePush, enablePush, getPushState, sendTestPush, showLocalSample, type PushState } from "@/lib/push";
 import { useScrollMemory } from "@/lib/nav";
 import { headline, FilingCard } from "@/components/filing-card";
 import { pct, price, tone } from "@/lib/format";
@@ -353,10 +353,29 @@ function PushCard() {
                 <>
                   <button
                     disabled={busy}
-                    onClick={() => run(sendTestPush, "Test alert sent. It should appear in a few seconds.")}
+                    onClick={() =>
+                      run(async () => {
+                        const r = await sendTestPush();
+                        const where = r.service.includes("google") ? "Google's push service" : r.service.includes("apple") ? "Apple's push service" : r.service.includes("mozilla") ? "Mozilla's push service" : r.service;
+                        setNote(
+                          r.ok
+                            ? `Sent. ${where} accepted it (${r.status}). It should appear within ~10 seconds. If it doesn't, but "Show a sample here" works, your network is likely blocking the browser's push connection (common on office/campus Wi-Fi).`
+                            : `Not delivered. ${where} answered ${r.status ?? "nothing"}: ${r.reason ?? "unknown error"}`,
+                        );
+                      })
+                    }
                     className="rounded-full bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
                   >
                     Send me a test alert
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      run(showLocalSample, "Shown from this page. If you didn't see it, check System Settings → Notifications → Google Chrome, and that Focus / Do Not Disturb is off.")
+                    }
+                    className="rounded-full border border-border px-3 py-1.5 text-xs disabled:opacity-50"
+                  >
+                    Show a sample here
                   </button>
                   <button disabled={busy} onClick={() => run(disablePush)} className="rounded-full border border-border px-3 py-1.5 text-xs disabled:opacity-50">
                     Turn off

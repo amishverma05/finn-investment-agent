@@ -96,6 +96,34 @@ def _send(sub: dict, payload: dict) -> bool:
         return False
 
 
+def test_send(endpoint: str, payload: dict) -> dict:
+    """Send one message to one device and report exactly what the push service answered
+    (used by "Send me a test alert" so problems can be told apart)."""
+    from urllib.parse import urlparse
+
+    from pywebpush import WebPushException, webpush
+
+    rows = db.query("SELECT sub FROM push_subs WHERE endpoint = ?", (endpoint,))
+    service = urlparse(endpoint).netloc
+    if not rows:
+        return {"ok": False, "service": service, "status": None,
+                "reason": "This device isn't registered on the server (it may have restarted). Turn notifications off and on."}
+    try:
+        with timed(log, "push: test", service=service) as t:
+            r = webpush(subscription_info=json.loads(rows[0][0]), data=json.dumps(payload),
+                        vapid_private_key=_keys(), vapid_claims={"sub": _contact()}, ttl=600, timeout=10)
+            t["status"] = r.status_code
+        return {"ok": True, "service": service, "status": r.status_code, "reason": None}
+    except WebPushException as e:
+        status = getattr(e.response, "status_code", None)
+        body = getattr(e.response, "text", "")[:200] if e.response is not None else str(e)[:200]
+        if status in (404, 410):
+            unsubscribe(endpoint)
+        return {"ok": False, "service": service, "status": status, "reason": body}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "service": service, "status": None, "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 def send(payload: dict, endpoint: str | None = None) -> int:
     """Send to every subscribed device (or just one). Returns how many got it."""
     rows = db.query("SELECT sub FROM push_subs" + (" WHERE endpoint = ?" if endpoint else ""),

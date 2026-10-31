@@ -234,19 +234,16 @@ def push_unsubscribe(e: Endpoint) -> dict:
 
 @app.post("/push/test")
 def push_test(e: Endpoint) -> dict:
-    """Send a sample alert to this device so you can see what notifications look like."""
-    sent = push.send(
+    """Send a sample alert to this device and report what the push service answered."""
+    return push.test_send(
+        e.endpoint,
         {
             "title": "FINN test alert",
             "body": "This is how alerts arrive: results, management changes and unusual moves in your stocks.",
             "url": "/alerts",
             "tag": "finn-test",
         },
-        endpoint=e.endpoint,
     )
-    if not sent:
-        raise HTTPException(400, "Couldn't reach this device. Turn notifications off and on again.")
-    return {"ok": True}
 
 
 # ---------- Background jobs ----------

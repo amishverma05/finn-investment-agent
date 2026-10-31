@@ -78,9 +78,25 @@ export async function disablePush(): Promise<PushState> {
   return "off";
 }
 
-export async function sendTestPush() {
+export type TestResult = { ok: boolean; service: string; status: number | null; reason: string | null };
+
+/** Ask the server to push a test message to this device; returns what the push service said. */
+export async function sendTestPush(): Promise<TestResult> {
   const reg = await navigator.serviceWorker.getRegistration("/");
   const sub = await reg?.pushManager.getSubscription();
   if (!sub) throw new Error("Turn on notifications first.");
-  await api("/push/test", { method: "POST", body: JSON.stringify({ endpoint: sub.endpoint }) });
+  return api<TestResult>("/push/test", { method: "POST", body: JSON.stringify({ endpoint: sub.endpoint }) });
+}
+
+/** Show a notification straight from this page (no server, no push service).
+ *  If this doesn't appear, the computer/browser is hiding notifications. */
+export async function showLocalSample() {
+  const reg = (await navigator.serviceWorker.getRegistration("/")) ?? (await navigator.serviceWorker.register("/sw.js"));
+  await navigator.serviceWorker.ready;
+  await reg.showNotification("FINN sample (from this page)", {
+    body: "If you can see this, your computer shows FINN notifications.",
+    icon: "/icon.svg",
+    tag: "finn-local-sample",
+    data: { url: "/alerts" },
+  });
 }
