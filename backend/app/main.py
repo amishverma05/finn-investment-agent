@@ -337,6 +337,14 @@ def debug_sources() -> dict:
         "yahoo_chart": ("https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS", {"range": "5d", "interval": "1d"},
                         "https://finance.yahoo.com/"),
         "egress_ip": ("https://api.ipify.org", {"format": "json"}, None),
+        # Document hosts used by research and results cards
+        "bse_pdf_annpdfopen": ("https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=c9d3d96a-8b04-4b41-b454-3f98d1f90702.pdf", None, "https://www.bseindia.com/"),
+        "bse_pdf_attachhis": ("https://www.bseindia.com/xml-data/corpfiling/AttachHis/cc08294f-ec68-4f15-aaa4-c14a3c4bdfb2.pdf", None, "https://www.bseindia.com/"),
+        "nse_archives_pdf": ("https://nsearchives.nseindia.com/corporate/kavinavora_31102026173331_SE_31102026_AR.pdf", None, "https://www.nseindia.com/"),
+        "screener_company": ("https://www.screener.in/company/RELIANCE/consolidated/", None, "https://www.screener.in/"),
+        # A fetch-through service (fetches the page from its own servers)
+        "jina_nse_api": ("https://r.jina.ai/https://www.nseindia.com/api/corporate-announcements?index=equities&symbol=RELIANCE", None, None),
+        "jina_bse_pdf": ("https://r.jina.ai/https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=c9d3d96a-8b04-4b41-b454-3f98d1f90702.pdf", None, None),
     }
     out = {}
     for name, (url, params, referer) in checks.items():
