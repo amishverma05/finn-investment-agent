@@ -56,6 +56,20 @@ def current(hours: int = 72) -> dict:
     return {"settings": s, "market": market, "filings": filings}
 
 
+# Whether there may be alerts waiting to be pushed. Lets the scheduler skip the database
+# check every 30 seconds (which would keep a hosted database from ever sleeping).
+_push_check_needed = True  # check once after startup
+
+
+def push_check_needed() -> bool:
+    return _push_check_needed
+
+
+def push_checked(still_waiting: int) -> None:
+    global _push_check_needed
+    _push_check_needed = still_waiting > 0
+
+
 def record(cur: dict) -> list[dict]:
     """Remember alerts we haven't seen before; returns the new ones.
     The very first time (empty table) everything is recorded silently, so a fresh
@@ -71,7 +85,16 @@ def record(cur: dict) -> list[dict]:
         body = f.get("summary") or f.get("title") or ""
         rows.append((f, "filing", f"{f['symbol']} · {f.get('category_label', 'Filing')}",
                      body[:160], f"/alerts?focus={f['alert_id']}"))
+    # One lookup for which alerts are already known, instead of one insert attempt per alert
+    # (matters when the database is remote).
+    ids = [r[0]["alert_id"] for r in rows]
+    known: set[str] = set()
+    if ids:
+        marks = ",".join("?" * len(ids))
+        known = {r[0] for r in db.query(f"SELECT id FROM alerts WHERE id IN ({marks})", tuple(ids))}
     for a, kind, title, body, url in rows:
+        if a["alert_id"] in known:
+            continue
         fresh = now - a["event_time"] < PUSH_IF_NEWER_THAN
         notify = -1 if (first_run or not fresh) else 0
         changed = db.execute(
@@ -81,6 +104,8 @@ def record(cur: dict) -> list[dict]:
         )
         if changed:
             new.append({"id": a["alert_id"], "title": title, "notify": notify})
+            if notify == 0:
+                push_checked(1)  # something to push
     if new:
         log.info("alerts: %d new (%d to push)%s", len(new), sum(1 for n in new if n["notify"] == 0),
                  " — first run, recorded silently" if first_run else "")

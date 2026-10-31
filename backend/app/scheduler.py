@@ -101,11 +101,15 @@ def _run(name: str, now: dt.datetime) -> None:
 
 
 def _push_pending() -> None:
+    """Send notifications for new alerts. Only looks at the database when something new was
+    recorded, and not during quiet hours (held alerts go out at 7 am)."""
+    if push.quiet_now() or not alerts.push_check_needed():
+        return
     waiting = alerts.pending()
-    if waiting:
-        done = push.flush(waiting)
-        if done:
-            alerts.mark_pushed(done)
+    done = push.flush(waiting) if waiting else []
+    if done:
+        alerts.mark_pushed(done)
+    alerts.push_checked(len(waiting) - len(done))
 
 
 # ---------- Lock + loop ----------

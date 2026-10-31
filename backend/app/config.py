@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     frontend_origin: str = "http://localhost:3000"
 
+    # Optional Postgres (e.g. Neon) for data that must survive restarts/redeploys.
+    # Without it, everything is kept in the local SQLite file backend/data/finn.db.
+    database_url: str = ""
+
     # Background jobs (filings, prices, alerts, push notifications). Turn off with SCHEDULER_ENABLED=false.
     scheduler_enabled: bool = True
     # Contact sent with push notifications (push services require one): a mailto: address

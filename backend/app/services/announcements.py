@@ -38,7 +38,6 @@ NSE_BLOCK_PAUSE = 30 * 60  # after a block, skip the API for this long
 RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
 EQUITY_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 
-db.execute("CREATE TABLE IF NOT EXISTS filings_store (id TEXT PRIMARY KEY, symbol TEXT, time REAL, row TEXT)")
 
 
 def _nse_blocked() -> bool:

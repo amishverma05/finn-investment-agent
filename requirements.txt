@@ -22,3 +22,6 @@ google-genai==2.33.0
 
 # --- Push notifications (alerts on phone/browser) ---
 pywebpush==2.5.0
+
+# --- Optional Postgres (Neon) for data that survives redeploys ---
+psycopg[binary]==3.3.6
