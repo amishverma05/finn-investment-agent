@@ -10,7 +10,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
 
+    # One key, or several separated by commas (GEMINI_API_KEY=key1,key2,...). GEMINI_API_KEYS works too.
+    # With several, each call uses a random one, and a rate-limited key is swapped for another.
     gemini_api_key: str = ""
+    gemini_api_keys: str = ""
 
     # Model routing: a cheap model for bulk extraction, a stronger one for reasoning.
     # Comma-separated fallbacks: the first one that works is used.

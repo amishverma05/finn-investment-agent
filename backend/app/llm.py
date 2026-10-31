@@ -12,6 +12,7 @@ If no API key is set, `available()` is False and callers fall back to non-AI out
 import contextvars
 import json
 import logging
+import random
 import threading
 import time
 from typing import Any, Literal
@@ -25,8 +26,9 @@ log = logging.getLogger("finn.llm")
 
 Tier = Literal["cheap", "strong"]
 
-_client = None
+_clients: dict[str, Any] = {}
 _client_lock = threading.Lock()
+_bad_keys: set[str] = set()  # keys Google rejected (invalid / no access); skipped until restart
 _working_model: dict[str, str] = {}
 # Free tiers are rate-limited per minute, so keep concurrency low.
 _slots = threading.Semaphore(3)
@@ -66,22 +68,44 @@ def track_usage() -> Usage:
     return u
 
 
+def _gemini_keys() -> list[str]:
+    """All configured Gemini keys (GEMINI_API_KEY and/or GEMINI_API_KEYS, comma-separated)."""
+    raw = f"{settings.gemini_api_key},{settings.gemini_api_keys}"
+    keys = []
+    for k in raw.split(","):
+        k = k.strip().strip('"').strip("'").strip()  # tolerate "key1","key2" with quotes
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def _pick_key(exclude: set[str] = frozenset()) -> str | None:
+    """A random usable key, avoiding ones already tried for this call."""
+    options = [k for k in _gemini_keys() if k not in exclude and k not in _bad_keys]
+    return random.choice(options) if options else None
+
+
+def _key_label(key: str) -> str:
+    """Which key, for logs, without revealing it: 'key 2/5'."""
+    keys = _gemini_keys()
+    return f"key {keys.index(key) + 1}/{len(keys)}" if key in keys else "key ?"
+
+
 def available() -> bool:
-    return bool(settings.gemini_api_key or settings.groq_api_key)
+    return bool(_gemini_keys() or settings.groq_api_key)
 
 
-def _get_client():
-    global _client
+def _get_client(key: str):
     with _client_lock:
-        if _client is None:
+        if key not in _clients:
             from google import genai
 
-            _client = genai.Client(api_key=settings.gemini_api_key)
-        return _client
+            _clients[key] = genai.Client(api_key=key)
+        return _clients[key]
 
 
 def _models(tier: Tier) -> list[str]:
-    if not settings.gemini_api_key:
+    if not _gemini_keys():
         return []
     raw = settings.model_cheap if tier == "cheap" else settings.model_strong
     return [m.strip() for m in raw.split(",") if m.strip()]
@@ -222,15 +246,19 @@ def _call(
                 log.warning("llm %s: Groq failed (%s), %s", purpose, str(e)[:200], switch_note)
                 continue
 
-        for attempt in range(1 + SERVER_RETRIES):
+        tried_keys: set[str] = set()
+        key = _pick_key()
+        attempt = 0
+        while key:
             waited = time.perf_counter()
             try:
                 with _slots:
                     queued = time.perf_counter() - waited
                     if queued > 0.5:
                         log.info("llm %s waited %.2fs for a free slot", purpose, queued)
-                    with timed(log, "llm call", purpose=purpose, model=model, tier=tier, prompt_chars=chars, attempt=attempt + 1) as t:
-                        resp = _get_client().models.generate_content(model=model, contents=contents, config=config)
+                    with timed(log, "llm call", purpose=purpose, model=model, tier=tier, prompt_chars=chars,
+                               attempt=attempt + 1, key=_key_label(key)) as t:
+                        resp = _get_client(key).models.generate_content(model=model, contents=contents, config=config)
                         meta = resp.usage_metadata
                         if meta:
                             t["in_tok"] = meta.prompt_token_count
@@ -250,8 +278,21 @@ def _call(
                 return Reply(resp.text or "", model, parsed=resp.parsed, raw=resp)
             except errors.ClientError as e:
                 last_err = e
-                if e.code == 429:
-                    log.warning("llm %s rate-limited on %s, %s\n    ↳ This model hit its usage limit, so we try another model instead of waiting.",
+                key_problem = e.code in (400, 401, 403) and "api key" in str(e).lower()
+                if e.code == 429 or key_problem:
+                    tried_keys.add(key)
+                    if key_problem:
+                        _bad_keys.add(key)
+                        log.warning("llm %s: Google rejected %s (%s); it won't be used again until restart",
+                                    purpose, _key_label(key), e.code)
+                    nxt_key = _pick_key(tried_keys)
+                    if nxt_key:
+                        if e.code == 429:
+                            log.warning("llm %s rate-limited on %s with %s, trying %s\n    ↳ Each key has its own free quota, so another key can answer right away.",
+                                        purpose, model, _key_label(key), _key_label(nxt_key))
+                        key = nxt_key
+                        continue
+                    log.warning("llm %s rate-limited on %s with every key, %s\n    ↳ All keys hit this model's usage limit, so we try another model instead of waiting.",
                                 purpose, model, switch_note)
                     break
                 if e.code in (400, 403, 404):
@@ -266,11 +307,14 @@ def _call(
             except errors.ServerError as e:
                 last_err = e
                 if attempt < SERVER_RETRIES and time.perf_counter() - started < GEMINI_BUDGET[tier]:
+                    attempt += 1
                     log.warning("llm %s server error on %s (attempt %d), retrying in %.0fs: %s\n    ↳ Google says this model is busy; one quick retry before trying another model.",
-                                purpose, model, attempt + 1, SERVER_RETRY_PAUSE, str(e)[:200])
+                                purpose, model, attempt, SERVER_RETRY_PAUSE, str(e)[:200])
                     time.sleep(SERVER_RETRY_PAUSE)
+                    key = _pick_key() or key
                 else:
                     log.warning("llm %s server error on %s again, %s", purpose, model, switch_note)
+                    break
     raise RuntimeError(f"All models failed for {tier} tier: {last_err}")
 
 
@@ -316,7 +360,7 @@ def generate_text(prompt: str, tier: Tier = "cheap", system: str | None = None) 
 def search_grounded(prompt: str) -> dict | None:
     """Answer using Google Search grounding. Returns {"text", "sources"}.
     Gemini only: Groq has no Google Search."""
-    if not settings.gemini_api_key:
+    if not _gemini_keys():
         return None
     from google.genai import types
 
@@ -406,7 +450,8 @@ def stream_json(prompt: str, schema: type[BaseModel], tier: Tier = "strong", sys
     """Like generate_json, but streams the answer from Gemini and calls on_partial(dict)
     with what's been written so far (about twice a second). If streaming fails before
     finishing, falls back to the normal call (with its backup models and Groq)."""
-    if not settings.gemini_api_key or on_partial is None:
+    key = _pick_key()
+    if not key or on_partial is None:
         return generate_json(prompt, schema, tier, system)
     from google.genai import types
 
@@ -422,11 +467,11 @@ def stream_json(prompt: str, schema: type[BaseModel], tier: Tier = "strong", sys
     buf = ""
     try:
         with _slots:
-            with timed(log, "llm stream", purpose=purpose, model=model, tier=tier, prompt_chars=len(prompt)) as t:
+            with timed(log, "llm stream", purpose=purpose, model=model, tier=tier, prompt_chars=len(prompt), key=_key_label(key)) as t:
                 start = time.perf_counter()
                 last_emit = 0.0
                 meta = None
-                for chunk in _get_client().models.generate_content_stream(model=model, contents=prompt, config=config):
+                for chunk in _get_client(key).models.generate_content_stream(model=model, contents=prompt, config=config):
                     if chunk.usage_metadata:
                         meta = chunk.usage_metadata
                     piece = chunk.text or ""
