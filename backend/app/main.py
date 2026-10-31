@@ -308,3 +308,61 @@ def research_ask(symbol: str, q: Question) -> dict:
     if not q.question.strip():
         raise HTTPException(400, "Ask a question.")
     return research.ask(symbol, q.question, [t.model_dump() for t in q.history])
+
+
+# ---------- Diagnostics (temporary): can this server reach each data source? ----------
+
+@app.get("/debug/sources")
+def debug_sources() -> dict:
+    """Try each upstream once from this server and report what came back.
+    Used to diagnose hosting issues (e.g. a site blocking cloud IPs). Returns no secrets."""
+    import datetime as dt
+
+    from app import net
+
+    today = dt.date.today()
+    week_ago = today - dt.timedelta(days=7)
+    checks = {
+        "nse_announcements": ("https://www.nseindia.com/api/corporate-announcements",
+                              {"index": "equities", "symbol": "RELIANCE",
+                               "from_date": week_ago.strftime("%d-%m-%Y"), "to_date": today.strftime("%d-%m-%Y")},
+                              "https://www.nseindia.com/"),
+        "nse_homepage": ("https://www.nseindia.com/", None, "https://www.nseindia.com/"),
+        "bse_announcements": ("https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w",
+                              {"pageno": 1, "strCat": -1, "strPrevDate": week_ago.strftime("%Y%m%d"), "strScrip": "500325",
+                               "strSearch": "P", "strToDate": today.strftime("%Y%m%d"), "strType": "C", "subcategory": -1},
+                              "https://www.bseindia.com/"),
+        "screener_search": ("https://www.screener.in/api/company/search/", {"q": "reliance", "v": 3, "fts": 1},
+                            "https://www.screener.in/"),
+        "yahoo_chart": ("https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS", {"range": "5d", "interval": "1d"},
+                        "https://finance.yahoo.com/"),
+        "egress_ip": ("https://api.ipify.org", {"format": "json"}, None),
+    }
+    out = {}
+    for name, (url, params, referer) in checks.items():
+        start = time.perf_counter()
+        try:
+            headers = {"Accept": "application/json, text/html;q=0.9"}
+            if referer:
+                headers["Referer"] = referer
+                headers["Origin"] = referer.rstrip("/")
+            r = net.client.get(url, params=params, headers=headers, timeout=20)
+            body = r.text
+            info = {
+                "status": r.status_code,
+                "content_type": r.headers.get("content-type"),
+                "bytes": len(r.content),
+                "server": r.headers.get("server"),
+                "took_s": round(time.perf_counter() - start, 2),
+                "start": body[:160].replace("\n", " "),
+            }
+            try:
+                data = r.json()
+                info["json"] = True
+                info["items"] = len(data) if isinstance(data, list) else len(data.get("Table", [])) if isinstance(data, dict) else None
+            except ValueError:
+                info["json"] = False
+            out[name] = info
+        except Exception as e:  # noqa: BLE001
+            out[name] = {"error": f"{type(e).__name__}: {str(e)[:200]}", "took_s": round(time.perf_counter() - start, 2)}
+    return out
