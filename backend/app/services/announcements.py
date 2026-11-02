@@ -115,11 +115,10 @@ def _fetch_symbol(symbol: str) -> list[dict]:
     api = _api_rows(symbol)
     if api is not None:
         return api
-    saved = _saved_rows(symbol)
-    if not saved:
-        _backfill_from_screener(symbol)
-        saved = _saved_rows(symbol)
-    return saved
+    # The RSS feed only covers the last few hours, so anything published while the server
+    # was asleep is caught by the screener backfill (it limits itself to every few hours).
+    _backfill_from_screener(symbol)
+    return _saved_rows(symbol)
 
 
 def _norm_name(name: str) -> str:
@@ -206,10 +205,10 @@ def _screener_id(symbol: str) -> int | None:
 
 def _backfill_from_screener(symbol: str) -> None:
     """Save a stock's latest few filings from screener.in (when NSE's API is blocked).
-    Runs at most once a day per stock."""
+    Runs at most once every 3 hours per stock."""
     if db.cache_get(f"scr_backfill:{symbol}"):
         return
-    db.cache_set(f"scr_backfill:{symbol}", True, ttl=24 * 3600)
+    db.cache_set(f"scr_backfill:{symbol}", True, ttl=3 * 3600)
     sid = _screener_id(symbol)
     if not sid:
         return
