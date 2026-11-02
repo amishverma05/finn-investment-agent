@@ -29,7 +29,10 @@ function useToday() {
 
 export default function BriefPage() {
   const storedWindow = useStored("finn.window");
-  const hours = Number(storedWindow) || 24;
+  // If you haven't picked a window and the last 24h is empty, widen to 3 days on its own,
+  // so the Brief never opens on a blank screen.
+  const [widened, setWidened] = useState(false);
+  const hours = Number(storedWindow) || (widened ? 72 : 24);
   const setHours = (h: number) => writeLS("finn.window", String(h));
   const [showRoutine, setShowRoutine] = useState(false);
   // When you last opened the Brief; filings newer than this get a dot. Cards only render
@@ -53,6 +56,8 @@ export default function BriefPage() {
   const current = [full.data, fast.data].find((d) => d?.hours === hours);
   const digest = { data: current ?? fast.data, loading: fast.loading, error: fast.error, reload: fast.reload };
   const summarising = pending > 0 && full.loading;
+  const emptyDay = !storedWindow && fast.data?.hours === 24 && (fast.data.items?.length ?? 0) === 0;
+  if (emptyDay && !widened) setWidened(true); // React's "update state while rendering" pattern
   const book = useApi<{ items: Holding[] }>("/portfolio");
   useScrollMemory(!!digest.data && !!book.data);
 
@@ -105,6 +110,10 @@ export default function BriefPage() {
           </p>
         ) : null}
       </section>
+
+      {widened && !storedWindow && hours === 72 && (
+        <p className="mt-2 px-4 text-[11px] text-muted-foreground">No filings in the last 24 hours, so showing the last 3 days.</p>
+      )}
 
       {summarising && (
         <p className="mt-2 flex items-center gap-1.5 px-4 text-[11px] text-muted-foreground">
