@@ -73,8 +73,10 @@ knowledge. Push-side bios are the one place web search is used (as the brief all
 ### Hosting notes
 - NSE's and BSE's announcement APIs refuse cloud servers (Akamai 403 / silent hang). The backend
   detects this, stops calling them for 30 min, and takes new filings from **NSE's RSS feed**
-  (matched to symbols via NSE's official company list) plus a screener.in backfill. Locally the
-  full NSE API is used. Filing PDFs download fine from the cloud.
+  (matched to symbols via NSE's official company list). The feed only keeps a few hours, so each
+  company is also re-checked on screener.in every 3 hours to catch anything published while the
+  server slept. Locally the full NSE API is used. Filing PDFs download fine from the cloud.
+- If the last 24 hours have no filings, the Brief opens on the last 3 days instead of an empty screen.
 - Render's free plan sleeps after 15 idle minutes; a GitHub Actions job pings `/health` every
   5 minutes so the scheduler keeps running.
 
